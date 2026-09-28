@@ -766,9 +766,44 @@ class LLM_Auto_Redirect {
             return new WP_Error('openai_error', 'OpenAI API failed: ' . $response->get_error_message());
         }
 
+        $response_code = wp_remote_retrieve_response_code($response);
         $body = wp_remote_retrieve_body($response);
         $data = json_decode($body, true);
-        
+        $api_error = '';
+        if (isset($data['error'])) {
+            if (is_array($data['error']) && isset($data['error']['message']) && is_string($data['error']['message'])) {
+                $api_error = $data['error']['message'];
+            } elseif (is_string($data['error'])) {
+                $api_error = $data['error'];
+            }
+        }
+
+        if ($api_error !== '') {
+            if (!empty($api_key)) {
+                $api_error = str_replace($api_key, '[redacted]', $api_error);
+            }
+            $api_error = sanitize_text_field($api_error);
+            if (strlen($api_error) > 300) {
+                $api_error = substr($api_error, 0, 300) . '…';
+            }
+        }
+
+        if ($response_code < 200 || $response_code >= 300) {
+            $detail = $api_error !== '' ? ': ' . $api_error : '';
+            return new WP_Error(
+                'openai_http',
+                sprintf('OpenAI-compatible API returned HTTP %d%s', $response_code, $detail)
+            );
+        }
+
+        if ($api_error !== '') {
+            return new WP_Error('openai_api_error', 'OpenAI-compatible API error: ' . $api_error);
+        }
+
+        if (!is_array($data)) {
+            return new WP_Error('openai_parse', 'OpenAI-compatible API returned an invalid JSON response');
+        }
+
         if (isset($data['choices'][0]['message']['content'])) {
             $content = $data['choices'][0]['message']['content'];
             if (empty(trim($content))) {
