@@ -22,6 +22,8 @@ class LLM_Auto_Redirect {
         add_action( 'admin_menu', [ $this, 'add_admin_menu' ] );
         // Register plugin settings
         add_action( 'admin_init', [ $this, 'register_settings' ] );
+        // Handle the AJAX request for testing the OpenAI-compatible endpoint
+        add_action( 'wp_ajax_lar_test_openai_connection', [ $this, 'handle_openai_connection_test_ajax' ] );
         // Handle the AJAX request for getting a suggestion
         add_action( 'wp_ajax_lar_get_llm_suggestion', [ $this, 'handle_llm_suggestion_ajax' ] );
         // Handle the AJAX request for creating a redirect
@@ -302,7 +304,9 @@ class LLM_Auto_Redirect {
     public function render_openai_base_url_field() {
         $url = get_option('lar_openai_base_url', 'https://api.openai.com/v1');
         echo '<input type="text" name="lar_openai_base_url" value="' . esc_attr( $url ) . '" class="regular-text">';
-        echo '<p class="description">Base URL for OpenAI-compatible API (e.g., https://api.openai.com/v1, https://api.groq.com/openai/v1)</p>';
+        echo '<p class="description">Base URL for OpenAI-compatible API (e.g., https://api.openai.com/v1, https://api.groq.com/openai/v1). Save settings before testing.</p>';
+        echo '<button type="button" id="lar-test-openai-connection" class="button">Test saved connection</button> ';
+        echo '<span id="lar-openai-connection-status" role="status" aria-live="polite"></span>';
     }
 
     public function render_openai_json_schema_field() {
@@ -459,6 +463,42 @@ class LLM_Auto_Redirect {
         
         <script>
         document.addEventListener('DOMContentLoaded', function() {
+            const connectionTestButton = document.getElementById('lar-test-openai-connection');
+            if (connectionTestButton) {
+                const connectionStatus = document.getElementById('lar-openai-connection-status');
+                connectionTestButton.addEventListener('click', function() {
+                    connectionTestButton.disabled = true;
+                    connectionStatus.textContent = 'Testing saved connection...';
+                    connectionStatus.style.color = '';
+
+                    fetch(ajaxurl, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: new URLSearchParams({
+                            action: 'lar_test_openai_connection',
+                            nonce: '<?php echo wp_create_nonce("lar_ajax_nonce"); ?>'
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            connectionStatus.textContent = data.data.message;
+                            connectionStatus.style.color = 'green';
+                        } else {
+                            connectionStatus.textContent = data.data || 'Connection test failed.';
+                            connectionStatus.style.color = 'red';
+                        }
+                    })
+                    .catch(error => {
+                        connectionStatus.textContent = 'Connection test failed: ' + error.message;
+                        connectionStatus.style.color = 'red';
+                    })
+                    .finally(() => {
+                        connectionTestButton.disabled = false;
+                    });
+                });
+            }
+
             document.querySelectorAll('.lar-suggest-btn').forEach(button => {
                 button.addEventListener('click', function() {
                     const sourceUrl = this.dataset.sourceUrl;
@@ -617,6 +657,29 @@ class LLM_Auto_Redirect {
     }
 
     /**
+     * Test the configured OpenAI-compatible endpoint without returning model output.
+     */
+    public function handle_openai_connection_test_ajax() {
+        check_ajax_referer('lar_ajax_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied.', 403);
+        }
+
+        $result = $this->call_openai(
+            'You are testing an OpenAI-compatible endpoint. Reply briefly.',
+            'Reply with exactly OK.',
+            32
+        );
+
+        if (is_wp_error($result)) {
+            wp_send_json_error($result->get_error_message());
+        }
+
+        wp_send_json_success(['message' => 'OpenAI-compatible API responded successfully.']);
+    }
+
+    /**
      * Handle the AJAX request to get a redirect suggestion from the LLM.
      */
     public function handle_llm_suggestion_ajax() {
@@ -749,7 +812,7 @@ class LLM_Auto_Redirect {
         return new WP_Error('ollama_parse', 'Could not parse Ollama response');
     }
 
-    private function call_openai($system_prompt, $user_prompt) {
+    private function call_openai($system_prompt, $user_prompt, $max_tokens = 2048) {
         $api_key = get_option('lar_openai_api_key');
         $model = get_option('lar_openai_model', 'gpt-4o-mini');
         $base_url = rtrim(get_option('lar_openai_base_url', 'https://api.openai.com/v1'), '/');
@@ -774,7 +837,7 @@ class LLM_Auto_Redirect {
                 ['role' => 'system', 'content' => $system_prompt],
                 ['role' => 'user', 'content' => $user_prompt]
             ],
-            'max_tokens' => 2048
+            'max_tokens' => max(1, min(2048, intval($max_tokens)))
         ];
 
         if ($use_json) {
