@@ -311,6 +311,7 @@ class LLM_Auto_Redirect {
 
     public function render_openai_json_schema_field() {
         $enabled = get_option('lar_openai_json_schema', false);
+        echo '<input type="hidden" name="lar_openai_json_schema" value="0">';
         echo '<input type="checkbox" name="lar_openai_json_schema" value="1" ' . checked(1, $enabled, false) . '>';
         echo '<p class="description">Enforce JSON Structured Output (forces reasoning/thinking models like DeepSeek-R1 in LM Studio or newer OpenAI models to constrain their response to strict JSON structure)</p>';
     }
