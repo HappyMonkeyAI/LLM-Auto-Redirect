@@ -67,7 +67,7 @@ class LLM_Auto_Redirect {
         
         register_setting( 'lar_settings_group', 'lar_openai_api_key', [
             'type' => 'string',
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ $this, 'sanitize_openai_api_key' ],
             'default' => ''
         ]);
         
@@ -91,7 +91,7 @@ class LLM_Auto_Redirect {
         
         register_setting( 'lar_settings_group', 'lar_openrouter_api_key', [
             'type' => 'string',
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ $this, 'sanitize_openrouter_api_key' ],
             'default' => ''
         ]);
         
@@ -103,7 +103,7 @@ class LLM_Auto_Redirect {
         
         register_setting( 'lar_settings_group', 'lar_gemini_api_key', [
             'type' => 'string',
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ $this, 'sanitize_gemini_api_key' ],
             'default' => ''
         ]);
         
@@ -223,6 +223,50 @@ class LLM_Auto_Redirect {
         );
     }
 
+    public function sanitize_openai_api_key($value) {
+        return $this->sanitize_api_key_setting($value, 'lar_openai_api_key', 'lar_clear_openai_api_key');
+    }
+
+    public function sanitize_openrouter_api_key($value) {
+        return $this->sanitize_api_key_setting($value, 'lar_openrouter_api_key', 'lar_clear_openrouter_api_key');
+    }
+
+    public function sanitize_gemini_api_key($value) {
+        return $this->sanitize_api_key_setting($value, 'lar_gemini_api_key', 'lar_clear_gemini_api_key');
+    }
+
+    private function sanitize_api_key_setting($value, $option_name, $clear_field) {
+        $clear_value = isset($_POST[$clear_field]) ? wp_unslash($_POST[$clear_field]) : '';
+        if ($clear_value === '1') {
+            return '';
+        }
+
+        if (!is_string($value)) {
+            return get_option($option_name, '');
+        }
+
+        $value = trim(wp_unslash($value));
+        if ($value === '') {
+            return get_option($option_name, '');
+        }
+
+        return sanitize_text_field($value);
+    }
+
+    private function render_api_key_field($option_name, $description) {
+        $has_key = (string) get_option($option_name, '') !== '';
+        $clear_field = 'lar_clear_' . str_replace('lar_', '', $option_name);
+        $field_id = esc_attr($option_name);
+
+        echo '<input type="password" id="' . $field_id . '" name="' . $field_id . '" value="" class="regular-text" autocomplete="new-password" placeholder="Leave blank to keep saved key">';
+        if ($has_key) {
+            echo '<p class="description">' . esc_html($description . ' A key is saved. Leave blank to keep it, or enter a replacement.') . '</p>';
+            echo '<label><input type="checkbox" id="' . esc_attr($clear_field) . '" name="' . esc_attr($clear_field) . '" value="1"> Clear saved key when saving</label>';
+        } else {
+            echo '<p class="description">' . esc_html($description . ' No key is saved.') . '</p>';
+        }
+    }
+
     public function render_provider_field() {
         $provider = get_option('lar_llm_provider', 'ollama');
         echo '<select name="lar_llm_provider">';
@@ -246,9 +290,7 @@ class LLM_Auto_Redirect {
     }
     
     public function render_openai_key_field() {
-        $key = get_option('lar_openai_api_key', '');
-        echo '<input type="password" name="lar_openai_api_key" value="' . esc_attr( $key ) . '" class="regular-text">';
-        echo '<p class="description">OpenAI API key</p>';
+        $this->render_api_key_field('lar_openai_api_key', 'API key or raw bearer token for the configured OpenAI-compatible endpoint; do not include the "Bearer " prefix.');
     }
     
     public function render_openai_model_field() {
@@ -270,9 +312,7 @@ class LLM_Auto_Redirect {
     }
     
     public function render_openrouter_key_field() {
-        $key = get_option('lar_openrouter_api_key', '');
-        echo '<input type="password" name="lar_openrouter_api_key" value="' . esc_attr( $key ) . '" class="regular-text">';
-        echo '<p class="description">OpenRouter API key</p>';
+        $this->render_api_key_field('lar_openrouter_api_key', 'OpenRouter API key.');
     }
     
     public function render_openrouter_model_field() {
@@ -282,9 +322,7 @@ class LLM_Auto_Redirect {
     }
     
     public function render_gemini_key_field() {
-        $key = get_option('lar_gemini_api_key', '');
-        echo '<input type="password" name="lar_gemini_api_key" value="' . esc_attr( $key ) . '" class="regular-text">';
-        echo '<p class="description">Google Gemini API key</p>';
+        $this->render_api_key_field('lar_gemini_api_key', 'Google Gemini API key.');
     }
     
     public function render_gemini_model_field() {
