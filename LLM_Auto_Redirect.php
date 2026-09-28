@@ -512,7 +512,7 @@ class LLM_Auto_Redirect {
                     
                     let totalProcessed = 0;
                     let totalCreated = 0;
-                    let offset = 0;
+                    let cursor = '';
                     let debugLog = [];
                     
                     const processBatch = () => {
@@ -525,7 +525,7 @@ class LLM_Auto_Redirect {
                                 action: 'lar_bulk_process',
                                 nonce: '<?php echo wp_create_nonce("lar_ajax_nonce"); ?>',
                                 batch_size: 10,
-                                offset: offset
+                                cursor: cursor
                             })
                         })
                         .then(response => response.json())
@@ -533,14 +533,13 @@ class LLM_Auto_Redirect {
                             if (data.success) {
                                 totalProcessed += data.data.processed;
                                 totalCreated += data.data.created;
-                                offset = data.data.offset;
+                                cursor = data.data.cursor || cursor;
                                 
                                 if (data.data.debug) {
                                     debugLog = debugLog.concat(data.data.debug);
                                 }
                                 
-                                const progress = data.data.progress || 0;
-                                status.innerHTML = `Progress: ${progress}% (${totalProcessed}/${data.data.total} processed, ${totalCreated} redirects created)`;
+                                status.innerHTML = `Processed ${totalProcessed} URLs, ${totalCreated} redirects created.`;
                                 
                                 if (data.data.errors && data.data.errors.length > 0) {
                                     console.warn('Bulk process errors:', data.data.errors);
@@ -975,24 +974,34 @@ class LLM_Auto_Redirect {
         $log_table = $wpdb->prefix . 'redirection_404';
         $redirect_table = $wpdb->prefix . 'redirection_items';
         
-        // Get batch parameters
+        // Use a bounded URL cursor because completed rows are removed during processing.
         $batch_size = isset($_POST['batch_size']) ? intval($_POST['batch_size']) : 10;
-        $offset = isset($_POST['offset']) ? intval($_POST['offset']) : 0;
-        
-        // Get all 404s without redirects
-        $all_query = "SELECT DISTINCT l.url FROM {$log_table} l LEFT JOIN {$redirect_table} r ON l.url = r.url WHERE r.id IS NULL LIMIT {$batch_size} OFFSET {$offset}";
+        $batch_size = max(1, min(50, $batch_size));
+        $cursor = isset($_POST['cursor']) ? wp_unslash($_POST['cursor']) : '';
+        $cursor = is_string($cursor) ? $cursor : '';
+
+        $all_query = "SELECT DISTINCT l.url FROM {$log_table} l LEFT JOIN {$redirect_table} r ON l.url = r.url WHERE r.id IS NULL";
+        if ($cursor !== '') {
+            $all_query .= ' AND l.url > %s';
+        }
+        $all_query .= ' ORDER BY l.url ASC LIMIT %d';
+        $all_query = $cursor !== ''
+            ? $wpdb->prepare($all_query, $cursor, $batch_size)
+            : $wpdb->prepare($all_query, $batch_size);
         $all_results = $wpdb->get_results($all_query);
-        
-        // Get total count for progress
-        $total_query = "SELECT COUNT(DISTINCT l.url) as total FROM {$log_table} l LEFT JOIN {$redirect_table} r ON l.url = r.url WHERE r.id IS NULL";
-        $total_count = $wpdb->get_var($total_query);
-        
+
+        $new_cursor = $cursor;
+        if (!empty($all_results)) {
+            $last_result = end($all_results);
+            $new_cursor = $last_result->url;
+        }
+        $complete = count($all_results) < $batch_size;
+
         if (empty($all_results)) {
             wp_send_json_success([
-                'processed' => 0, 
-                'created' => 0, 
-                'total' => $total_count,
-                'offset' => $offset,
+                'processed' => 0,
+                'created' => 0,
+                'cursor' => $new_cursor,
                 'complete' => true,
                 'message' => 'No more 404s to process'
             ]);
@@ -1063,16 +1072,11 @@ class LLM_Auto_Redirect {
             }
         }
         
-        $new_offset = $offset + $batch_size;
-        $complete = $new_offset >= $total_count;
-        
         $response = [
             'processed' => $processed,
             'created' => $created,
-            'total' => $total_count,
-            'offset' => $new_offset,
+            'cursor' => $new_cursor,
             'complete' => $complete,
-            'progress' => round(($new_offset / $total_count) * 100, 1),
             'debug' => $debug
         ];
         
