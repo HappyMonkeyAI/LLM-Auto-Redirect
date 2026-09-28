@@ -672,6 +672,13 @@ class LLM_Auto_Redirect {
         if (!filter_var($suggested_url, FILTER_VALIDATE_URL)) {
             return new WP_Error('invalid_url', 'LLM returned invalid URL: ' . $suggested_url);
         }
+
+        if (!in_array($suggested_url, $potential_targets, true)) {
+            return new WP_Error(
+                'invalid_target',
+                'LLM suggested a destination that is not in the approved page list.'
+            );
+        }
         
         return $suggested_url;
     }
