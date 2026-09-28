@@ -10,3 +10,9 @@ admin-minimal.php
 .agent-tasks.json
 .agent-session.json
 setup-prompt.txt
+
+# Local release output, Python bytecode, and user-provided screenshots
+/dist/
+/screenshots/
+__pycache__/
+*.py[cod]
