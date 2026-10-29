@@ -2,10 +2,10 @@
 /**
  * Plugin Name:       LLM Auto Redirect
  * Description:       Uses an LLM to suggest intelligent redirects for 404 errors found by the Redirection plugin.
- * Version:           1.3.2
+ * Version:           1.3.3
  * Author:            Gemini
- * License:           GPL-2.0+
- * License URI:       http://www.gnu.org/licenses/gpl-2.0.txt
+ * License:           MIT
+ * License URI:       https://opensource.org/license/mit/
  * Text Domain:       llm-auto-redirect
  */
 
@@ -22,6 +22,8 @@ class LLM_Auto_Redirect {
         add_action( 'admin_menu', [ $this, 'add_admin_menu' ] );
         // Register plugin settings
         add_action( 'admin_init', [ $this, 'register_settings' ] );
+        // Handle the AJAX request for testing the OpenAI-compatible endpoint
+        add_action( 'wp_ajax_lar_test_openai_connection', [ $this, 'handle_openai_connection_test_ajax' ] );
         // Handle the AJAX request for getting a suggestion
         add_action( 'wp_ajax_lar_get_llm_suggestion', [ $this, 'handle_llm_suggestion_ajax' ] );
         // Handle the AJAX request for creating a redirect
@@ -67,7 +69,7 @@ class LLM_Auto_Redirect {
         
         register_setting( 'lar_settings_group', 'lar_openai_api_key', [
             'type' => 'string',
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ $this, 'sanitize_openai_api_key' ],
             'default' => ''
         ]);
         
@@ -91,7 +93,7 @@ class LLM_Auto_Redirect {
         
         register_setting( 'lar_settings_group', 'lar_openrouter_api_key', [
             'type' => 'string',
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ $this, 'sanitize_openrouter_api_key' ],
             'default' => ''
         ]);
         
@@ -103,7 +105,7 @@ class LLM_Auto_Redirect {
         
         register_setting( 'lar_settings_group', 'lar_gemini_api_key', [
             'type' => 'string',
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ $this, 'sanitize_gemini_api_key' ],
             'default' => ''
         ]);
         
@@ -223,6 +225,50 @@ class LLM_Auto_Redirect {
         );
     }
 
+    public function sanitize_openai_api_key($value) {
+        return $this->sanitize_api_key_setting($value, 'lar_openai_api_key', 'lar_clear_openai_api_key');
+    }
+
+    public function sanitize_openrouter_api_key($value) {
+        return $this->sanitize_api_key_setting($value, 'lar_openrouter_api_key', 'lar_clear_openrouter_api_key');
+    }
+
+    public function sanitize_gemini_api_key($value) {
+        return $this->sanitize_api_key_setting($value, 'lar_gemini_api_key', 'lar_clear_gemini_api_key');
+    }
+
+    private function sanitize_api_key_setting($value, $option_name, $clear_field) {
+        $clear_value = isset($_POST[$clear_field]) ? wp_unslash($_POST[$clear_field]) : '';
+        if ($clear_value === '1') {
+            return '';
+        }
+
+        if (!is_string($value)) {
+            return get_option($option_name, '');
+        }
+
+        $value = trim(wp_unslash($value));
+        if ($value === '') {
+            return get_option($option_name, '');
+        }
+
+        return sanitize_text_field($value);
+    }
+
+    private function render_api_key_field($option_name, $description) {
+        $has_key = (string) get_option($option_name, '') !== '';
+        $clear_field = 'lar_clear_' . str_replace('lar_', '', $option_name);
+        $field_id = esc_attr($option_name);
+
+        echo '<input type="password" id="' . $field_id . '" name="' . $field_id . '" value="" class="regular-text" autocomplete="new-password" placeholder="Leave blank to keep saved key">';
+        if ($has_key) {
+            echo '<p class="description">' . esc_html($description . ' A key is saved. Leave blank to keep it, or enter a replacement.') . '</p>';
+            echo '<label><input type="checkbox" id="' . esc_attr($clear_field) . '" name="' . esc_attr($clear_field) . '" value="1"> Clear saved key when saving</label>';
+        } else {
+            echo '<p class="description">' . esc_html($description . ' No key is saved.') . '</p>';
+        }
+    }
+
     public function render_provider_field() {
         $provider = get_option('lar_llm_provider', 'ollama');
         echo '<select name="lar_llm_provider">';
@@ -246,9 +292,7 @@ class LLM_Auto_Redirect {
     }
     
     public function render_openai_key_field() {
-        $key = get_option('lar_openai_api_key', '');
-        echo '<input type="password" name="lar_openai_api_key" value="' . esc_attr( $key ) . '" class="regular-text">';
-        echo '<p class="description">OpenAI API key</p>';
+        $this->render_api_key_field('lar_openai_api_key', 'API key or raw bearer token for the configured OpenAI-compatible endpoint; do not include the "Bearer " prefix.');
     }
     
     public function render_openai_model_field() {
@@ -260,19 +304,20 @@ class LLM_Auto_Redirect {
     public function render_openai_base_url_field() {
         $url = get_option('lar_openai_base_url', 'https://api.openai.com/v1');
         echo '<input type="text" name="lar_openai_base_url" value="' . esc_attr( $url ) . '" class="regular-text">';
-        echo '<p class="description">Base URL for OpenAI-compatible API (e.g., https://api.openai.com/v1, https://api.groq.com/openai/v1)</p>';
+        echo '<p class="description">Base URL for OpenAI-compatible API (e.g., https://api.openai.com/v1, https://api.groq.com/openai/v1). Save settings before testing.</p>';
+        echo '<button type="button" id="lar-test-openai-connection" class="button">Test saved connection</button> ';
+        echo '<span id="lar-openai-connection-status" role="status" aria-live="polite"></span>';
     }
 
     public function render_openai_json_schema_field() {
         $enabled = get_option('lar_openai_json_schema', false);
+        echo '<input type="hidden" name="lar_openai_json_schema" value="0">';
         echo '<input type="checkbox" name="lar_openai_json_schema" value="1" ' . checked(1, $enabled, false) . '>';
         echo '<p class="description">Enforce JSON Structured Output (forces reasoning/thinking models like DeepSeek-R1 in LM Studio or newer OpenAI models to constrain their response to strict JSON structure)</p>';
     }
     
     public function render_openrouter_key_field() {
-        $key = get_option('lar_openrouter_api_key', '');
-        echo '<input type="password" name="lar_openrouter_api_key" value="' . esc_attr( $key ) . '" class="regular-text">';
-        echo '<p class="description">OpenRouter API key</p>';
+        $this->render_api_key_field('lar_openrouter_api_key', 'OpenRouter API key.');
     }
     
     public function render_openrouter_model_field() {
@@ -282,9 +327,7 @@ class LLM_Auto_Redirect {
     }
     
     public function render_gemini_key_field() {
-        $key = get_option('lar_gemini_api_key', '');
-        echo '<input type="password" name="lar_gemini_api_key" value="' . esc_attr( $key ) . '" class="regular-text">';
-        echo '<p class="description">Google Gemini API key</p>';
+        $this->render_api_key_field('lar_gemini_api_key', 'Google Gemini API key.');
     }
     
     public function render_gemini_model_field() {
@@ -421,6 +464,42 @@ class LLM_Auto_Redirect {
         
         <script>
         document.addEventListener('DOMContentLoaded', function() {
+            const connectionTestButton = document.getElementById('lar-test-openai-connection');
+            if (connectionTestButton) {
+                const connectionStatus = document.getElementById('lar-openai-connection-status');
+                connectionTestButton.addEventListener('click', function() {
+                    connectionTestButton.disabled = true;
+                    connectionStatus.textContent = 'Testing saved connection...';
+                    connectionStatus.style.color = '';
+
+                    fetch(ajaxurl, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: new URLSearchParams({
+                            action: 'lar_test_openai_connection',
+                            nonce: '<?php echo wp_create_nonce("lar_ajax_nonce"); ?>'
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            connectionStatus.textContent = data.data.message;
+                            connectionStatus.style.color = 'green';
+                        } else {
+                            connectionStatus.textContent = data.data || 'Connection test failed.';
+                            connectionStatus.style.color = 'red';
+                        }
+                    })
+                    .catch(error => {
+                        connectionStatus.textContent = 'Connection test failed: ' + error.message;
+                        connectionStatus.style.color = 'red';
+                    })
+                    .finally(() => {
+                        connectionTestButton.disabled = false;
+                    });
+                });
+            }
+
             document.querySelectorAll('.lar-suggest-btn').forEach(button => {
                 button.addEventListener('click', function() {
                     const sourceUrl = this.dataset.sourceUrl;
@@ -512,7 +591,7 @@ class LLM_Auto_Redirect {
                     
                     let totalProcessed = 0;
                     let totalCreated = 0;
-                    let offset = 0;
+                    let cursor = '';
                     let debugLog = [];
                     
                     const processBatch = () => {
@@ -525,7 +604,7 @@ class LLM_Auto_Redirect {
                                 action: 'lar_bulk_process',
                                 nonce: '<?php echo wp_create_nonce("lar_ajax_nonce"); ?>',
                                 batch_size: 10,
-                                offset: offset
+                                cursor: cursor
                             })
                         })
                         .then(response => response.json())
@@ -533,14 +612,13 @@ class LLM_Auto_Redirect {
                             if (data.success) {
                                 totalProcessed += data.data.processed;
                                 totalCreated += data.data.created;
-                                offset = data.data.offset;
+                                cursor = data.data.cursor || cursor;
                                 
                                 if (data.data.debug) {
                                     debugLog = debugLog.concat(data.data.debug);
                                 }
                                 
-                                const progress = data.data.progress || 0;
-                                status.innerHTML = `Progress: ${progress}% (${totalProcessed}/${data.data.total} processed, ${totalCreated} redirects created)`;
+                                status.innerHTML = `Processed ${totalProcessed} URLs, ${totalCreated} redirects created.`;
                                 
                                 if (data.data.errors && data.data.errors.length > 0) {
                                     console.warn('Bulk process errors:', data.data.errors);
@@ -577,6 +655,29 @@ class LLM_Auto_Redirect {
         });
         </script>
         <?php
+    }
+
+    /**
+     * Test the configured OpenAI-compatible endpoint without returning model output.
+     */
+    public function handle_openai_connection_test_ajax() {
+        check_ajax_referer('lar_ajax_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied.', 403);
+        }
+
+        $result = $this->call_openai(
+            'You are testing an OpenAI-compatible endpoint. Reply briefly.',
+            'Reply with exactly OK.',
+            32
+        );
+
+        if (is_wp_error($result)) {
+            wp_send_json_error($result->get_error_message());
+        }
+
+        wp_send_json_success(['message' => 'OpenAI-compatible API responded successfully.']);
     }
 
     /**
@@ -672,6 +773,13 @@ class LLM_Auto_Redirect {
         if (!filter_var($suggested_url, FILTER_VALIDATE_URL)) {
             return new WP_Error('invalid_url', 'LLM returned invalid URL: ' . $suggested_url);
         }
+
+        if (!in_array($suggested_url, $potential_targets, true)) {
+            return new WP_Error(
+                'invalid_target',
+                'LLM suggested a destination that is not in the approved page list.'
+            );
+        }
         
         return $suggested_url;
     }
@@ -705,7 +813,7 @@ class LLM_Auto_Redirect {
         return new WP_Error('ollama_parse', 'Could not parse Ollama response');
     }
 
-    private function call_openai($system_prompt, $user_prompt) {
+    private function call_openai($system_prompt, $user_prompt, $max_tokens = 2048) {
         $api_key = get_option('lar_openai_api_key');
         $model = get_option('lar_openai_model', 'gpt-4o-mini');
         $base_url = rtrim(get_option('lar_openai_base_url', 'https://api.openai.com/v1'), '/');
@@ -730,7 +838,7 @@ class LLM_Auto_Redirect {
                 ['role' => 'system', 'content' => $system_prompt],
                 ['role' => 'user', 'content' => $user_prompt]
             ],
-            'max_tokens' => 2048
+            'max_tokens' => max(1, min(2048, intval($max_tokens)))
         ];
 
         if ($use_json) {
@@ -766,9 +874,44 @@ class LLM_Auto_Redirect {
             return new WP_Error('openai_error', 'OpenAI API failed: ' . $response->get_error_message());
         }
 
+        $response_code = wp_remote_retrieve_response_code($response);
         $body = wp_remote_retrieve_body($response);
         $data = json_decode($body, true);
-        
+        $api_error = '';
+        if (isset($data['error'])) {
+            if (is_array($data['error']) && isset($data['error']['message']) && is_string($data['error']['message'])) {
+                $api_error = $data['error']['message'];
+            } elseif (is_string($data['error'])) {
+                $api_error = $data['error'];
+            }
+        }
+
+        if ($api_error !== '') {
+            if (!empty($api_key)) {
+                $api_error = str_replace($api_key, '[redacted]', $api_error);
+            }
+            $api_error = sanitize_text_field($api_error);
+            if (strlen($api_error) > 300) {
+                $api_error = substr($api_error, 0, 300) . '…';
+            }
+        }
+
+        if ($response_code < 200 || $response_code >= 300) {
+            $detail = $api_error !== '' ? ': ' . $api_error : '';
+            return new WP_Error(
+                'openai_http',
+                sprintf('OpenAI-compatible API returned HTTP %d%s', $response_code, $detail)
+            );
+        }
+
+        if ($api_error !== '') {
+            return new WP_Error('openai_api_error', 'OpenAI-compatible API error: ' . $api_error);
+        }
+
+        if (!is_array($data)) {
+            return new WP_Error('openai_parse', 'OpenAI-compatible API returned an invalid JSON response');
+        }
+
         if (isset($data['choices'][0]['message']['content'])) {
             $content = $data['choices'][0]['message']['content'];
             if (empty(trim($content))) {
@@ -933,24 +1076,34 @@ class LLM_Auto_Redirect {
         $log_table = $wpdb->prefix . 'redirection_404';
         $redirect_table = $wpdb->prefix . 'redirection_items';
         
-        // Get batch parameters
+        // Use a bounded URL cursor because completed rows are removed during processing.
         $batch_size = isset($_POST['batch_size']) ? intval($_POST['batch_size']) : 10;
-        $offset = isset($_POST['offset']) ? intval($_POST['offset']) : 0;
-        
-        // Get all 404s without redirects
-        $all_query = "SELECT DISTINCT l.url FROM {$log_table} l LEFT JOIN {$redirect_table} r ON l.url = r.url WHERE r.id IS NULL LIMIT {$batch_size} OFFSET {$offset}";
+        $batch_size = max(1, min(50, $batch_size));
+        $cursor = isset($_POST['cursor']) ? wp_unslash($_POST['cursor']) : '';
+        $cursor = is_string($cursor) ? $cursor : '';
+
+        $all_query = "SELECT DISTINCT l.url FROM {$log_table} l LEFT JOIN {$redirect_table} r ON l.url = r.url WHERE r.id IS NULL";
+        if ($cursor !== '') {
+            $all_query .= ' AND l.url > %s';
+        }
+        $all_query .= ' ORDER BY l.url ASC LIMIT %d';
+        $all_query = $cursor !== ''
+            ? $wpdb->prepare($all_query, $cursor, $batch_size)
+            : $wpdb->prepare($all_query, $batch_size);
         $all_results = $wpdb->get_results($all_query);
-        
-        // Get total count for progress
-        $total_query = "SELECT COUNT(DISTINCT l.url) as total FROM {$log_table} l LEFT JOIN {$redirect_table} r ON l.url = r.url WHERE r.id IS NULL";
-        $total_count = $wpdb->get_var($total_query);
-        
+
+        $new_cursor = $cursor;
+        if (!empty($all_results)) {
+            $last_result = end($all_results);
+            $new_cursor = $last_result->url;
+        }
+        $complete = count($all_results) < $batch_size;
+
         if (empty($all_results)) {
             wp_send_json_success([
-                'processed' => 0, 
-                'created' => 0, 
-                'total' => $total_count,
-                'offset' => $offset,
+                'processed' => 0,
+                'created' => 0,
+                'cursor' => $new_cursor,
                 'complete' => true,
                 'message' => 'No more 404s to process'
             ]);
@@ -1021,16 +1174,11 @@ class LLM_Auto_Redirect {
             }
         }
         
-        $new_offset = $offset + $batch_size;
-        $complete = $new_offset >= $total_count;
-        
         $response = [
             'processed' => $processed,
             'created' => $created,
-            'total' => $total_count,
-            'offset' => $new_offset,
+            'cursor' => $new_cursor,
             'complete' => $complete,
-            'progress' => round(($new_offset / $total_count) * 100, 1),
             'debug' => $debug
         ];
         

@@ -1,0 +1,49 @@
+name: PHP tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  php-tests:
+    name: PHP ${{ matrix.php-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['7.4', '8.3']
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          coverage: none
+
+      - name: Lint plugin and regression tests
+        run: |
+          set -eu
+          php -l LLM_Auto_Redirect.php
+          for test_file in tests/test-*.php; do
+            php -l "$test_file"
+          done
+
+      - name: Run all regression tests
+        run: |
+          set -eu
+          for test_file in tests/test-*.php; do
+            php "$test_file"
+          done
+
+      - name: Set up Python for release-builder checks
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test release package builder
+        run: python tests/test-package-release.py
